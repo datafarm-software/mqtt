@@ -28,7 +28,7 @@ type TopicProcessor interface {
 	PayloadProcess(ctx context.Context, processFunc ProcessFunc) error
 }
 
-type OptsFromConfig struct {
+type Opts struct {
 	Broker   string `mapstructure:"broker" validate:"required"`
 	Port     int    `mapstructure:"port" validate:"required"`
 	ClientId string `mapstructure:"clientid" validate:"required"`
@@ -36,7 +36,7 @@ type OptsFromConfig struct {
 	Password string `mapstructure:"password" validate:"required"`
 }
 
-func ConnectMqtt(opts OptsFromConfig) (mqtt.Client, error) {
+func ConnectMqtt(opts Opts) (mqtt.Client, error) {
 	o := mqtt.NewClientOptions()
 	o.AddBroker(fmt.Sprintf("tcp://%s:%d", opts.Broker, opts.Port))
 	o.SetClientID(opts.ClientId)
@@ -50,33 +50,44 @@ func ConnectMqtt(opts OptsFromConfig) (mqtt.Client, error) {
 }
 
 type handler struct {
+	opts       Opts
 	client     mqtt.Client
 	processors map[string]TopicProcessor
 }
 
-func NewHandler(opts OptsFromConfig) (MqttHandler, error) {
-	h := handler{
+func NewHandler(opts Opts) (MqttHandler, error) {
+	h := &handler{
 		processors: make(map[string]TopicProcessor, 0),
+		opts:       opts,
 	}
+	err := h.mqttClient()
+	return h, err
+}
+
+func (h *handler) mqttClient() error {
 	o := mqtt.NewClientOptions()
-	o.AddBroker(fmt.Sprintf("tcp://%s:%d", opts.Broker, opts.Port))
-	o.SetClientID(opts.ClientId)
-	o.SetUsername(opts.Username)
-	o.SetPassword(opts.Password)
+	o.AddBroker(fmt.Sprintf("tcp://%s:%d", h.opts.Broker, h.opts.Port))
+	o.SetClientID(h.opts.ClientId)
+	o.SetUsername(h.opts.Username)
+	o.SetPassword(h.opts.Password)
 	o.SetDefaultPublishHandler(h.MessageHandler)
 	o.OnConnect = h.connectHandler
 	o.OnConnectionLost = h.connectLostHandler
 	client := mqtt.NewClient(o)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return nil, fmt.Errorf("Error connecting to MQTT: %v", token.Error())
+	token := client.Connect()
+	if !token.WaitTimeout(100 * time.Millisecond) {
+		return fmt.Errorf("Timeout connecting.")
+	}
+	if token.Error() != nil {
+		return fmt.Errorf("Connecting to MQTT: %v", token.Error())
 	}
 	h.client = client
-	return &h, nil
+	return nil
 }
 
 func (h *handler) Close() error {
 	for topic := range h.processors {
-		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(5 * time.Second) {
+		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
 			return fmt.Errorf("error unsubscribing from topic: %s", topic)
 		}
 	}
@@ -93,8 +104,8 @@ func (h *handler) GetClient() (mqtt.Client, error) {
 
 func (h *handler) Subscribe(topic string) (TopicProcessor, error) {
 	token := h.client.Subscribe(topic, 1, nil)
-	if ok := token.WaitTimeout(10 * time.Second); !ok {
-		return nil, fmt.Errorf("failed to subscribe to topic: %s", topic)
+	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
+		return nil, fmt.Errorf("timeout subscribing to topic: %s", topic)
 	}
 	log.Printf("Mqtt Connector - Subscribed to topic: %s", topic)
 	p := &processor{
@@ -127,6 +138,28 @@ func (h *handler) connectHandler(client mqtt.Client) {
 
 func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
+	log.Printf("Reconnecting")
+	var connectSuccess, subscribeSuccess bool
+	var p TopicProcessor
+	for i := range 59 {
+		if !connectSuccess {
+			if err := h.mqttClient(); err != nil {
+				log.Printf("Reconnect %d: %v", i+1, err)
+			}
+		}
+		connectSuccess = true
+		if !subscribeSuccess {
+		innerLoop:
+			for topic := range h.processors {
+				p, err = h.Subscribe(topic)
+				if err != nil {
+					log.Printf("re subscribing to %s, error: %v", topic, err)
+					continue innerLoop
+				}
+				h.processors[topic] = p
+			}
+		}
+	}
 }
 
 func (h *handler) match(wildcard, topic string) bool {
@@ -204,7 +237,7 @@ func (p *processor) AsyncPayloadProcess(ctx context.Context, numWorkers int, pro
 		}
 	}
 
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		wg.Add(1)
 		go workerTask()
 	}
