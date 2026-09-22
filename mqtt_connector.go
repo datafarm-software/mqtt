@@ -78,10 +78,13 @@ func (h *handler) mqttClient() error {
 	return nil
 }
 
-func (h *handler) Close() error {
-	for topic := range h.processors {
+func (h *handler) Close() (err error) {
+	for topic, processor := range h.processors {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
-			return fmt.Errorf("error unsubscribing from topic: %s", topic)
+			log.Printf("unsubscribing from topic: %s", topic)
+		}
+		if err = processor.Close(); err != nil {
+			log.Printf("closing processor for: %s, error: %v", topic, err)
 		}
 	}
 	h.client.Disconnect(250)
@@ -139,12 +142,14 @@ func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Reconnecting")
 	var connectSuccess, subscribeSuccess bool
 	for i := range 59 {
+		time.Sleep(1 * time.Minute)
 		if !connectSuccess {
 			if err := h.mqttClient(); err != nil {
-				log.Printf("Reconnect %d: %v", i+1, err)
+				log.Printf("on reconnect attempt %d: %v", i+1, err)
+				continue
 			}
+			connectSuccess = true
 		}
-		connectSuccess = true
 		if !subscribeSuccess {
 		innerLoop:
 			for topic, p := range h.processors {
@@ -155,8 +160,13 @@ func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 				}
 				h.processors[topic] = p
 			}
+			subscribeSuccess = true
+		}
+		if connectSuccess && subscribeSuccess {
+			break
 		}
 	}
+	log.Printf("MQTT Connector - Reconnected and Resubscribed")
 }
 
 func (h *handler) match(wildcard, topic string) bool {
