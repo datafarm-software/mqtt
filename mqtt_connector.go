@@ -81,10 +81,10 @@ func (h *handler) mqttClient() error {
 func (h *handler) Close() (err error) {
 	for topic, processor := range h.processors {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
-			log.Printf("unsubscribing from topic: %s", topic)
+			log.Printf("Mqtt Connector - unsubscribing from topic: %s", topic)
 		}
 		if err = processor.Close(); err != nil {
-			log.Printf("closing processor for: %s, error: %v", topic, err)
+			log.Printf("Mqtt Connector - closing processor for: %s, error: %v", topic, err)
 		}
 	}
 	h.client.Disconnect(250)
@@ -104,8 +104,10 @@ func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
 		return fmt.Errorf("timeout subscribing to topic: %s", topic)
 	}
+	ctx, cancel := context.WithCancel(ctx)
 	p := &processor{
 		ctx:            ctx,
+		cancel:         cancel,
 		numWorkers:     numWorkers,
 		processFunc:    pf,
 		payloadChannel: make(chan []byte, 1024),
@@ -135,38 +137,31 @@ func (h *handler) MessageHandler(client mqtt.Client, msg mqtt.Message) {
 
 func (h *handler) connectHandler(client mqtt.Client) {
 	log.Println("Mqtt Connector - Client Connected")
+	var err error
+	for topic, p := range h.processors {
+		err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
+		if err != nil {
+			log.Printf("Mqtt Connector - while re subscribing to %s, error: %v", topic, err)
+		}
+	}
 }
 
 func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
-	log.Printf("Reconnecting")
-	var connectSuccess, subscribeSuccess bool
+	log.Printf("Mqtt Connector - Reconnecting")
+	var connectSuccess bool
 	for i := range 59 {
 		time.Sleep(1 * time.Minute)
-		if !connectSuccess {
-			if err := h.mqttClient(); err != nil {
-				log.Printf("on reconnect attempt %d: %v", i+1, err)
-				continue
-			}
+		if err := h.mqttClient(); err != nil {
+			log.Printf("Mqtt Connector - on reconnect attempt %d: %v", i+1, err)
+		} else {
 			connectSuccess = true
 		}
-		if !subscribeSuccess {
-		innerLoop:
-			for topic, p := range h.processors {
-				err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
-				if err != nil {
-					log.Printf("re subscribing to %s, error: %v", topic, err)
-					continue innerLoop
-				}
-				h.processors[topic] = p
-			}
-			subscribeSuccess = true
-		}
-		if connectSuccess && subscribeSuccess {
+		if connectSuccess {
 			break
 		}
 	}
-	log.Printf("MQTT Connector - Reconnected and Resubscribed")
+	log.Printf("Mqtt Connector - Client Reconnected")
 }
 
 func (h *handler) match(wildcard, topic string) bool {
@@ -194,6 +189,7 @@ type processor struct {
 	ctx            context.Context
 	wg             sync.WaitGroup
 	once           sync.Once
+	cancel         context.CancelFunc
 	numWorkers     int
 	processFunc    ProcessFunc
 	payloadChannel chan []byte
@@ -201,6 +197,8 @@ type processor struct {
 }
 
 func (p *processor) Close() error {
+	p.cancel()
+	p.wg.Wait()
 	p.once.Do(func() {
 		close(p.payloadChannel)
 		close(p.errorChannel)
