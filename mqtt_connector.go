@@ -21,12 +21,6 @@ type MqttHandler interface {
 	MessageHandler(client mqtt.Client, msg mqtt.Message)
 }
 
-type TopicProcessor interface {
-	Close() error
-	SendPayload(payload []byte)
-	GetErrorChannel() chan error
-}
-
 type Opts struct {
 	Broker   string `mapstructure:"broker" validate:"required"`
 	Port     int    `mapstructure:"port" validate:"required"`
@@ -51,12 +45,12 @@ func ConnectMqtt(opts Opts) (mqtt.Client, error) {
 type handler struct {
 	opts       Opts
 	client     mqtt.Client
-	processors map[string]TopicProcessor
+	processors map[string]*processor
 }
 
 func NewHandler(opts Opts) (MqttHandler, error) {
 	h := &handler{
-		processors: make(map[string]TopicProcessor, 0),
+		processors: make(map[string]*processor),
 		opts:       opts,
 	}
 	err := h.mqttClient()
@@ -107,15 +101,16 @@ func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
 		return fmt.Errorf("timeout subscribing to topic: %s", topic)
 	}
-	log.Printf("Mqtt Connector - Subscribed to topic: %s", topic)
 	p := &processor{
+		ctx:            ctx,
 		numWorkers:     numWorkers,
 		processFunc:    pf,
-		payloadChannel: make(chan []byte),
-		errorChannel:   make(chan error),
+		payloadChannel: make(chan []byte, 1024),
+		errorChannel:   make(chan error, 10),
 	}
 	h.processors[topic] = p
-	p.asyncProcess(ctx)
+	p.asyncProcess()
+	log.Printf("Mqtt Connector - Processing Topic: %s", topic)
 	return nil
 }
 
@@ -143,7 +138,6 @@ func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
 	log.Printf("Reconnecting")
 	var connectSuccess, subscribeSuccess bool
-	var p TopicProcessor
 	for i := range 59 {
 		if !connectSuccess {
 			if err := h.mqttClient(); err != nil {
@@ -153,8 +147,8 @@ func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 		connectSuccess = true
 		if !subscribeSuccess {
 		innerLoop:
-			for topic := range h.processors {
-				p, err = h.Subscribe(topic)
+			for topic, p := range h.processors {
+				err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
 				if err != nil {
 					log.Printf("re subscribing to %s, error: %v", topic, err)
 					continue innerLoop
@@ -187,6 +181,8 @@ func (h *handler) match(wildcard, topic string) bool {
 }
 
 type processor struct {
+	ctx            context.Context
+	wg             sync.WaitGroup
 	once           sync.Once
 	numWorkers     int
 	processFunc    ProcessFunc
@@ -210,7 +206,7 @@ func (p *processor) GetErrorChannel() chan error {
 	return p.errorChannel
 }
 
-func (p *processor) asyncProcess(ctx context.Context) {
+func (p *processor) asyncProcess() {
 	workerTask := func() {
 		for {
 			select {
@@ -221,11 +217,11 @@ func (p *processor) asyncProcess(ctx context.Context) {
 				if err := p.processFunc(payload); err != nil {
 					select {
 					case p.GetErrorChannel() <- err:
-					case <-ctx.Done():
+					case <-p.ctx.Done():
 						return
 					}
 				}
-			case <-ctx.Done():
+			case <-p.ctx.Done():
 				return
 			}
 		}
@@ -234,6 +230,6 @@ func (p *processor) asyncProcess(ctx context.Context) {
 		p.numWorkers = 1
 	}
 	for range p.numWorkers {
-		wg.Go(workerTask)
+		p.wg.Go(workerTask)
 	}
 }
