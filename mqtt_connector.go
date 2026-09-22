@@ -16,7 +16,8 @@ type ProcessFunc func([]byte) error
 type MqttHandler interface {
 	Close() error
 	GetClient() (mqtt.Client, error)
-	Subscribe(topic string) (TopicProcessor, error)
+	AsyncProcess(ctx context.Context, topic string, numWorkers int,
+		processFunc ProcessFunc) error
 	MessageHandler(client mqtt.Client, msg mqtt.Message)
 }
 
@@ -24,8 +25,6 @@ type TopicProcessor interface {
 	Close() error
 	SendPayload(payload []byte)
 	GetErrorChannel() chan error
-	AsyncPayloadProcess(ctx context.Context, numWorkers int, processFunc ProcessFunc)
-	PayloadProcess(ctx context.Context, processFunc ProcessFunc) error
 }
 
 type Opts struct {
@@ -102,18 +101,22 @@ func (h *handler) GetClient() (mqtt.Client, error) {
 	return h.client, nil
 }
 
-func (h *handler) Subscribe(topic string) (TopicProcessor, error) {
+func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int,
+	pf ProcessFunc) error {
 	token := h.client.Subscribe(topic, 1, nil)
 	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
-		return nil, fmt.Errorf("timeout subscribing to topic: %s", topic)
+		return fmt.Errorf("timeout subscribing to topic: %s", topic)
 	}
 	log.Printf("Mqtt Connector - Subscribed to topic: %s", topic)
 	p := &processor{
+		numWorkers:     numWorkers,
+		processFunc:    pf,
 		payloadChannel: make(chan []byte),
 		errorChannel:   make(chan error),
 	}
 	h.processors[topic] = p
-	return p, nil
+	p.asyncProcess(ctx)
+	return nil
 }
 
 func (h *handler) MessageHandler(client mqtt.Client, msg mqtt.Message) {
@@ -184,9 +187,11 @@ func (h *handler) match(wildcard, topic string) bool {
 }
 
 type processor struct {
+	once           sync.Once
+	numWorkers     int
+	processFunc    ProcessFunc
 	payloadChannel chan []byte
 	errorChannel   chan error
-	once           sync.Once
 }
 
 func (p *processor) Close() error {
@@ -205,26 +210,15 @@ func (p *processor) GetErrorChannel() chan error {
 	return p.errorChannel
 }
 
-// AsyncPayloadHandler listens on the TopicProcessor payload channel
-// and processes incoming MQTT payloads asynchronously.
-//
-// It continues running until the context is canceled.
-// Errors are sent to the TopicProcessor's error channel.
-//
-// Parameters:
-// - numWorkers: Determines how many workers are spawned to handle payload processing.
-// - processFunc: A client-defined function that defines what to do with a received payload.
-func (p *processor) AsyncPayloadProcess(ctx context.Context, numWorkers int, processFunc ProcessFunc) {
-	var wg sync.WaitGroup
+func (p *processor) asyncProcess(ctx context.Context) {
 	workerTask := func() {
-		defer wg.Done()
 		for {
 			select {
 			case payload, ok := <-p.payloadChannel:
 				if !ok {
 					return
 				}
-				if err := processFunc(payload); err != nil {
+				if err := p.processFunc(payload); err != nil {
 					select {
 					case p.GetErrorChannel() <- err:
 					case <-ctx.Done():
@@ -236,26 +230,10 @@ func (p *processor) AsyncPayloadProcess(ctx context.Context, numWorkers int, pro
 			}
 		}
 	}
-
-	for range numWorkers {
-		wg.Add(1)
-		go workerTask()
+	if p.numWorkers < 1 {
+		p.numWorkers = 1
 	}
-	<-ctx.Done()
-	log.Println("Mqtt Connector - payload handler received shutdown signal")
-	wg.Wait()
-	log.Println("Mqtt Connector - all workers stopped.")
-}
-
-// PayloadProcess handles the first payload it receives, before exiting.
-func (p *processor) PayloadProcess(ctx context.Context, processFunc ProcessFunc) error {
-	select {
-	case payload := <-p.payloadChannel:
-		if err := processFunc(payload); err != nil {
-			return fmt.Errorf("error processing payload: %v", err)
-		}
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("operation cancelled: %v", ctx.Err())
+	for range p.numWorkers {
+		wg.Go(workerTask)
 	}
 }
