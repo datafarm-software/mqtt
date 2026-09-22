@@ -83,7 +83,7 @@ func (h *handler) Close() (err error) {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
 			log.Printf("Mqtt Connector - unsubscribing from topic: %s", topic)
 		}
-		if err = processor.Close(); err != nil {
+		if err = processor.close(); err != nil {
 			log.Printf("Mqtt Connector - closing processor for: %s, error: %v", topic, err)
 		}
 	}
@@ -122,13 +122,13 @@ func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 func (h *handler) MessageHandler(client mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 	if p, ok := h.processors[topic]; ok {
-		p.SendPayload(msg.Payload())
+		p.sendPayload(msg.Payload())
 		return
 	}
 	for wildcard := range h.processors {
 		if h.match(wildcard, topic) {
 			if p, ok := h.processors[wildcard]; ok {
-				p.SendPayload(msg.Payload())
+				p.sendPayload(msg.Payload())
 				return
 			}
 		}
@@ -196,7 +196,7 @@ type processor struct {
 	errorChannel   chan error
 }
 
-func (p *processor) Close() error {
+func (p *processor) close() error {
 	p.cancel()
 	p.wg.Wait()
 	p.once.Do(func() {
@@ -206,11 +206,11 @@ func (p *processor) Close() error {
 	return nil
 }
 
-func (p *processor) SendPayload(payload []byte) {
+func (p *processor) sendPayload(payload []byte) {
 	p.payloadChannel <- payload
 }
 
-func (p *processor) GetErrorChannel() chan error {
+func (p *processor) getErrorChannel() chan error {
 	return p.errorChannel
 }
 
@@ -224,7 +224,7 @@ func (p *processor) asyncProcess() {
 				}
 				if err := p.processFunc(payload); err != nil {
 					select {
-					case p.GetErrorChannel() <- err:
+					case p.getErrorChannel() <- err:
 					case <-p.ctx.Done():
 						return
 					}
