@@ -79,11 +79,9 @@ func (h *Handler) Close() (err error) {
 	return nil
 }
 
-func (h *Handler) GetClient() (mqtt.Client, error) {
-	if !h.client.IsConnected() {
-		return nil, fmt.Errorf("client not connected")
-	}
-	return h.client, nil
+func (h *Handler) Publish(topic string, qos byte, retained bool,
+	payload any) mqtt.Token {
+	return h.client.Publish(topic, qos, retained, payload)
 }
 
 func (h *Handler) GetExceptionChan() <-chan Exception {
