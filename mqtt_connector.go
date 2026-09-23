@@ -18,15 +18,6 @@ type Exception struct {
 
 type ProcessFunc func([]byte) error
 
-type MqttHandler interface {
-	Close() error
-	GetClient() (mqtt.Client, error)
-	GetExceptions() <-chan Exception
-	AsyncProcess(ctx context.Context, topic string, numWorkers int,
-		processFunc ProcessFunc) error
-	MessageHandler(client mqtt.Client, msg mqtt.Message)
-}
-
 type Opts struct {
 	Broker   string `mapstructure:"broker" validate:"required"`
 	Port     int    `mapstructure:"port" validate:"required"`
@@ -35,20 +26,7 @@ type Opts struct {
 	Password string `mapstructure:"password" validate:"required"`
 }
 
-func ConnectMqtt(opts Opts) (mqtt.Client, error) {
-	o := mqtt.NewClientOptions()
-	o.AddBroker(fmt.Sprintf("tcp://%s:%d", opts.Broker, opts.Port))
-	o.SetClientID(opts.ClientId)
-	o.SetUsername(opts.Username)
-	o.SetPassword(opts.Password)
-	client := mqtt.NewClient(o)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return nil, fmt.Errorf("Error connecting to MQTT: %v", token.Error())
-	}
-	return client, nil
-}
-
-type handler struct {
+type Handler struct {
 	opts       Opts
 	wg         sync.WaitGroup
 	client     mqtt.Client
@@ -56,8 +34,8 @@ type handler struct {
 	exceptions chan Exception
 }
 
-func NewHandler(opts Opts) (MqttHandler, error) {
-	h := &handler{
+func NewHandler(opts Opts) (*Handler, error) {
+	h := &Handler{
 		processors: make(map[string]*processor),
 		opts:       opts,
 		exceptions: make(chan Exception, 10),
@@ -66,13 +44,13 @@ func NewHandler(opts Opts) (MqttHandler, error) {
 	return h, err
 }
 
-func (h *handler) mqttClient() error {
+func (h *Handler) mqttClient() error {
 	o := mqtt.NewClientOptions()
 	o.AddBroker(fmt.Sprintf("tcp://%s:%d", h.opts.Broker, h.opts.Port))
 	o.SetClientID(h.opts.ClientId)
 	o.SetUsername(h.opts.Username)
 	o.SetPassword(h.opts.Password)
-	o.SetDefaultPublishHandler(h.MessageHandler)
+	o.SetDefaultPublishHandler(h.messageHandler)
 	o.OnConnect = h.connectHandler
 	o.OnConnectionLost = h.connectLostHandler
 	client := mqtt.NewClient(o)
@@ -87,7 +65,7 @@ func (h *handler) mqttClient() error {
 	return nil
 }
 
-func (h *handler) Close() (err error) {
+func (h *Handler) Close() (err error) {
 	for topic, processor := range h.processors {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
 			log.Printf("Mqtt Connector - unsubscribing from topic: %s", topic)
@@ -101,18 +79,18 @@ func (h *handler) Close() (err error) {
 	return nil
 }
 
-func (h *handler) GetClient() (mqtt.Client, error) {
+func (h *Handler) GetClient() (mqtt.Client, error) {
 	if !h.client.IsConnected() {
 		return nil, fmt.Errorf("client not connected")
 	}
 	return h.client, nil
 }
 
-func (h *handler) GetExceptions() <-chan Exception {
+func (h *Handler) GetExceptionChan() <-chan Exception {
 	return h.exceptions
 }
 
-func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int,
+func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int,
 	pf ProcessFunc) error {
 	token := h.client.Subscribe(topic, 1, nil)
 	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
@@ -134,23 +112,22 @@ func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	return nil
 }
 
-func (h *handler) MessageHandler(client mqtt.Client, msg mqtt.Message) {
+func (h *Handler) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 	if p, ok := h.processors[topic]; ok {
 		p.sendPayload(msg.Payload())
-		return
-	}
-	for wildcard := range h.processors {
-		if h.match(wildcard, topic) {
-			if p, ok := h.processors[wildcard]; ok {
-				p.sendPayload(msg.Payload())
-				return
+	} else {
+		for wildcard := range h.processors {
+			if h.match(wildcard, topic) {
+				if p, ok := h.processors[wildcard]; ok {
+					p.sendPayload(msg.Payload())
+				}
 			}
 		}
 	}
 }
 
-func (h *handler) connectHandler(client mqtt.Client) {
+func (h *Handler) connectHandler(client mqtt.Client) {
 	log.Println("Mqtt Connector - Client Connected")
 	var err error
 	for topic, p := range h.processors {
@@ -161,7 +138,7 @@ func (h *handler) connectHandler(client mqtt.Client) {
 	}
 }
 
-func (h *handler) connectLostHandler(client mqtt.Client, err error) {
+func (h *Handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
 	log.Printf("Mqtt Connector - Reconnecting")
 	var connectSuccess bool
@@ -179,7 +156,7 @@ func (h *handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Client Reconnected")
 }
 
-func (h *handler) match(wildcard, topic string) bool {
+func (h *Handler) match(wildcard, topic string) bool {
 	if wildcard == topic {
 		return true
 	}
