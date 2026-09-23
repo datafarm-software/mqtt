@@ -53,15 +53,14 @@ func (h *Handler) mqttClient() error {
 	o.SetDefaultPublishHandler(h.messageHandler)
 	o.OnConnect = h.connectHandler
 	o.OnConnectionLost = h.connectLostHandler
-	client := mqtt.NewClient(o)
-	token := client.Connect()
+	h.client = mqtt.NewClient(o)
+	token := h.client.Connect()
 	if !token.WaitTimeout(100 * time.Millisecond) {
 		return fmt.Errorf("Timeout connecting.")
 	}
 	if token.Error() != nil {
 		return fmt.Errorf("Connecting to MQTT: %v", token.Error())
 	}
-	h.client = client
 	return nil
 }
 
@@ -128,7 +127,6 @@ func (h *Handler) messageHandler(client mqtt.Client, msg mqtt.Message) {
 }
 
 func (h *Handler) connectHandler(client mqtt.Client) {
-	log.Println("Mqtt Connector - Client Connected")
 	var err error
 	for topic, p := range h.processors {
 		err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
