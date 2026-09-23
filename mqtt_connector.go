@@ -11,6 +11,11 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
+type Exception struct {
+	error
+	Topic string
+}
+
 type ProcessFunc func([]byte) error
 
 type MqttHandler interface {
@@ -44,14 +49,17 @@ func ConnectMqtt(opts Opts) (mqtt.Client, error) {
 
 type handler struct {
 	opts       Opts
+	wg         sync.WaitGroup
 	client     mqtt.Client
 	processors map[string]*processor
+	exceptions chan Exception
 }
 
 func NewHandler(opts Opts) (MqttHandler, error) {
 	h := &handler{
 		processors: make(map[string]*processor),
 		opts:       opts,
+		exceptions: make(chan Exception, 10),
 	}
 	err := h.mqttClient()
 	return h, err
@@ -87,6 +95,7 @@ func (h *handler) Close() (err error) {
 			log.Printf("Mqtt Connector - closing processor for: %s, error: %v", topic, err)
 		}
 	}
+	close(h.exceptions)
 	h.client.Disconnect(250)
 	return nil
 }
@@ -96,6 +105,10 @@ func (h *handler) GetClient() (mqtt.Client, error) {
 		return nil, fmt.Errorf("client not connected")
 	}
 	return h.client, nil
+}
+
+func (h *handler) GetExceptions() <-chan Exception {
+	return h.exceptions
 }
 
 func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int,
@@ -111,7 +124,8 @@ func (h *handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 		numWorkers:     numWorkers,
 		processFunc:    pf,
 		payloadChannel: make(chan []byte, 1024),
-		errorChannel:   make(chan error, 10),
+		exceptionsChan: h.exceptions,
+		topic:          topic,
 	}
 	h.processors[topic] = p
 	p.asyncProcess()
@@ -189,11 +203,12 @@ type processor struct {
 	ctx            context.Context
 	wg             sync.WaitGroup
 	once           sync.Once
+	topic          string
 	cancel         context.CancelFunc
 	numWorkers     int
 	processFunc    ProcessFunc
 	payloadChannel chan []byte
-	errorChannel   chan error
+	exceptionsChan chan<- Exception
 }
 
 func (p *processor) close() error {
@@ -201,17 +216,12 @@ func (p *processor) close() error {
 	p.wg.Wait()
 	p.once.Do(func() {
 		close(p.payloadChannel)
-		close(p.errorChannel)
 	})
 	return nil
 }
 
 func (p *processor) sendPayload(payload []byte) {
 	p.payloadChannel <- payload
-}
-
-func (p *processor) getErrorChannel() chan error {
-	return p.errorChannel
 }
 
 func (p *processor) asyncProcess() {
@@ -223,8 +233,12 @@ func (p *processor) asyncProcess() {
 					return
 				}
 				if err := p.processFunc(payload); err != nil {
+					ticker := time.NewTicker(100 * time.Millisecond)
+					defer ticker.Stop()
 					select {
-					case p.getErrorChannel() <- err:
+					case p.exceptionsChan <- Exception{err, p.topic}:
+					case <-ticker.C:
+						return
 					case <-p.ctx.Done():
 						return
 					}
