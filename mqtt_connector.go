@@ -21,6 +21,7 @@ type ProcessFunc func([]byte) error
 type MqttHandler interface {
 	Close() error
 	GetClient() (mqtt.Client, error)
+	GetExceptions() <-chan Exception
 	AsyncProcess(ctx context.Context, topic string, numWorkers int,
 		processFunc ProcessFunc) error
 	MessageHandler(client mqtt.Client, msg mqtt.Message)
