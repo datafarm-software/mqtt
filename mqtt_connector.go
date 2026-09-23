@@ -53,6 +53,7 @@ func (h *Handler) mqttClient() error {
 	o.SetDefaultPublishHandler(h.messageHandler)
 	o.OnConnect = h.connectHandler
 	o.OnConnectionLost = h.connectLostHandler
+	o.AutoReconnect = false
 	h.client = mqtt.NewClient(o)
 	token := h.client.Connect()
 	if !token.WaitTimeout(100 * time.Millisecond) {
