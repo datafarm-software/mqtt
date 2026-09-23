@@ -1,4 +1,4 @@
-package mqtt_connector
+package mqtt
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 var dh = &handler{
@@ -37,7 +37,7 @@ func (m *MockMqttClient) IsConnected() bool {
 func (m *MockMqttClient) IsConnectionOpen() bool {
 	return true
 }
-func (m *MockMqttClient) Connect() mqtt.Token {
+func (m *MockMqttClient) Connect() pahomqtt.Token {
 	return &MockToken{}
 }
 func (m *MockMqttClient) Disconnect(quiesce uint) {}
@@ -46,28 +46,28 @@ func (m *MockMqttClient) Publish(
 	qos byte,
 	retained bool,
 	payload interface{},
-) mqtt.Token {
+) pahomqtt.Token {
 	return &MockToken{}
 }
 func (m *MockMqttClient) Subscribe(
 	topic string,
 	qos byte,
-	callBack mqtt.MessageHandler,
-) mqtt.Token {
+	callBack pahomqtt.MessageHandler,
+) pahomqtt.Token {
 	return &MockToken{}
 }
 func (m *MockMqttClient) SubscribeMultiple(
 	filters map[string]byte,
-	callback mqtt.MessageHandler,
-) mqtt.Token {
+	callback pahomqtt.MessageHandler,
+) pahomqtt.Token {
 	return &MockToken{}
 }
-func (m *MockMqttClient) Unsubscribe(topics ...string) mqtt.Token {
+func (m *MockMqttClient) Unsubscribe(topics ...string) pahomqtt.Token {
 	return &MockToken{}
 }
-func (m *MockMqttClient) AddRoute(topic string, callback mqtt.MessageHandler) {}
-func (m *MockMqttClient) OptionsReader() mqtt.ClientOptionsReader {
-	return mqtt.ClientOptionsReader{}
+func (m *MockMqttClient) AddRoute(topic string, callback pahomqtt.MessageHandler) {}
+func (m *MockMqttClient) OptionsReader() pahomqtt.ClientOptionsReader {
+	return pahomqtt.ClientOptionsReader{}
 }
 
 func TestSubscribe(t *testing.T) {

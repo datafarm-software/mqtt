@@ -1,4 +1,4 @@
-package mqtt_connector
+package mqtt
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 type Exception struct {
@@ -29,7 +29,7 @@ type Opts struct {
 type Handler struct {
 	opts       Opts
 	wg         sync.WaitGroup
-	client     mqtt.Client
+	client     pahomqtt.Client
 	processors map[string]*processor
 	exceptions chan Exception
 }
@@ -45,7 +45,7 @@ func NewHandler(opts Opts) (*Handler, error) {
 }
 
 func (h *Handler) mqttClient() error {
-	o := mqtt.NewClientOptions()
+	o := pahomqtt.NewClientOptions()
 	o.AddBroker(fmt.Sprintf("tcp://%s:%d", h.opts.Broker, h.opts.Port))
 	o.SetClientID(h.opts.ClientId)
 	o.SetUsername(h.opts.Username)
@@ -54,7 +54,7 @@ func (h *Handler) mqttClient() error {
 	o.OnConnect = h.connectHandler
 	o.OnConnectionLost = h.connectLostHandler
 	o.AutoReconnect = false
-	h.client = mqtt.NewClient(o)
+	h.client = pahomqtt.NewClient(o)
 	token := h.client.Connect()
 	if !token.WaitTimeout(100 * time.Millisecond) {
 		return fmt.Errorf("Timeout connecting.")
@@ -115,7 +115,7 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	return nil
 }
 
-func (h *Handler) messageHandler(client mqtt.Client, msg mqtt.Message) {
+func (h *Handler) messageHandler(client pahomqtt.Client, msg pahomqtt.Message) {
 	topic := msg.Topic()
 	if p, ok := h.processors[topic]; ok {
 		p.sendPayload(msg.Payload())
@@ -130,7 +130,7 @@ func (h *Handler) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	}
 }
 
-func (h *Handler) connectHandler(client mqtt.Client) {
+func (h *Handler) connectHandler(client pahomqtt.Client) {
 	var err error
 	for topic, p := range h.processors {
 		err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
@@ -142,7 +142,7 @@ func (h *Handler) connectHandler(client mqtt.Client) {
 
 const TwoHours = 119
 
-func (h *Handler) connectLostHandler(client mqtt.Client, err error) {
+func (h *Handler) connectLostHandler(client pahomqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
 	log.Printf("Mqtt Connector - Reconnecting")
 	var connectSuccess bool
