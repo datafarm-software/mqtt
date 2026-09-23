@@ -1,6 +1,0 @@
-MQTT:
-  Broker: ""
-  Port:
-  ClientID: ""
-  Username: ""
-  Password: ""
