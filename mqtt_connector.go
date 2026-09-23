@@ -80,8 +80,13 @@ func (h *Handler) Close() (err error) {
 }
 
 func (h *Handler) Publish(topic string, qos byte, retained bool,
-	payload any) mqtt.Token {
-	return h.client.Publish(topic, qos, retained, payload)
+	payload any, timeout time.Duration) (err error) {
+	token := h.client.Publish(topic, qos, retained, payload)
+	if ok := token.WaitTimeout(timeout); !ok || token.Error() != nil {
+		err = fmt.Errorf("publishing to: %s, timeout: %v, error: %v",
+			topic, ok, token.Error())
+	}
+	return
 }
 
 func (h *Handler) GetExceptionChan() <-chan Exception {
