@@ -135,11 +135,13 @@ func (h *Handler) connectHandler(client mqtt.Client) {
 	}
 }
 
+const TwoHours = 119
+
 func (h *Handler) connectLostHandler(client mqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
 	log.Printf("Mqtt Connector - Reconnecting")
 	var connectSuccess bool
-	for i := range 59 {
+	for i := range TwoHours {
 		time.Sleep(1 * time.Minute)
 		if err := h.mqttClient(); err != nil {
 			log.Printf("Mqtt Connector - on reconnect attempt %d: %v", i+1, err)
@@ -150,7 +152,11 @@ func (h *Handler) connectLostHandler(client mqtt.Client, err error) {
 			break
 		}
 	}
-	log.Printf("Mqtt Connector - Client Reconnected")
+	if h.client.IsConnected() {
+		log.Printf("Mqtt Connector - Client Reconnected")
+	} else {
+		log.Printf("Mqtt Connector - Connect Retry Failed")
+	}
 }
 
 func (h *Handler) match(wildcard, topic string) bool {
