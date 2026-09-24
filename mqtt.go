@@ -145,17 +145,18 @@ const TwoHours = 119
 func (h *Handler) connectLostHandler(client pahomqtt.Client, err error) {
 	log.Printf("Mqtt Connector - Connection lost: %v", err)
 	log.Printf("Mqtt Connector - Reconnecting")
-	var connectSuccess bool
 	for i := range TwoHours {
 		time.Sleep(1 * time.Minute)
-		if err := h.mqttClient(); err != nil {
-			log.Printf("Mqtt Connector - on reconnect attempt %d: %v", i+1, err)
-		} else {
-			connectSuccess = true
+		token := client.Connect()
+		if !token.WaitTimeout(5 * time.Second) {
+			log.Printf("Mqtt Connector - on reconnect attempt %d: timed out", i+1)
+			continue
 		}
-		if connectSuccess {
-			break
+		if err := token.Error(); err != nil {
+			log.Printf("Mqtt Connector - on reconnect attempt %d: error: %v", i+1, err)
+			continue
 		}
+		break
 	}
 	if h.client.IsConnected() {
 		log.Printf("Mqtt Connector - Client Reconnected")
