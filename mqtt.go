@@ -12,7 +12,7 @@ import (
 )
 
 type Exception struct {
-	error
+	Err   error
 	Topic string
 }
 
@@ -80,7 +80,8 @@ func (h *Handler) Close() (err error) {
 }
 
 func (h *Handler) Publish(topic string, qos byte, retained bool,
-	payload any, timeout time.Duration) (err error) {
+	payload any, timeout time.Duration,
+) (err error) {
 	token := h.client.Publish(topic, qos, retained, payload)
 	if ok := token.WaitTimeout(timeout); !ok || token.Error() != nil {
 		err = fmt.Errorf("publishing to: %s, timeout: %v, error: %v",
@@ -94,7 +95,8 @@ func (h *Handler) GetExceptionChan() <-chan Exception {
 }
 
 func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int,
-	pf ProcessFunc) error {
+	pf ProcessFunc,
+) error {
 	token := h.client.Subscribe(topic, 1, nil)
 	if ok := token.WaitTimeout(100 * time.Millisecond); !ok {
 		return fmt.Errorf("timeout subscribing to topic: %s", topic)
