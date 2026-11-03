@@ -56,8 +56,8 @@ func (p *processorRegistry) GetProcessor(topic string) *processor {
 type Handler struct {
 	opts             Opts
 	subscribedTopics []string
-	wg               sync.WaitGroup
 	client           pahomqtt.Client
+	mu               sync.Mutex
 	pr               *processorRegistry
 	exceptions       chan Exception
 }
@@ -144,7 +144,9 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	}
 	h.pr.SetProcessor(topic, p)
 	p.asyncProcess()
+	h.mu.Lock()
 	h.subscribedTopics = append(h.subscribedTopics, topic)
+	h.mu.Unlock()
 	log.Printf("Mqtt Connector - Processing Topic: %s", topic)
 	return nil
 }
