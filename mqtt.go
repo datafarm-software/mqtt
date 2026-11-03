@@ -26,17 +26,45 @@ type Opts struct {
 	Password string `mapstructure:"password" validate:"required"`
 }
 
+type processorRegistry struct {
+	mapMu *sync.Mutex
+	pr    map[string]*processor
+}
+
+func NewProcessorRegistry() *processorRegistry {
+	return &processorRegistry{
+		mapMu: new(sync.Mutex),
+		pr:    make(map[string]*processor),
+	}
+}
+
+func (p *processorRegistry) SetProcessor(topic string, pr *processor) {
+	p.mapMu.Lock()
+	defer p.mapMu.Unlock()
+	p.pr[topic] = pr
+}
+
+func (p *processorRegistry) GetProcessor(topic string) *processor {
+	p.mapMu.Lock()
+	defer p.mapMu.Unlock()
+	if pr, exists := p.pr[topic]; exists {
+		return pr
+	}
+	return nil
+}
+
 type Handler struct {
-	opts       Opts
-	wg         sync.WaitGroup
-	client     pahomqtt.Client
-	processors map[string]*processor
-	exceptions chan Exception
+	opts             Opts
+	subscribedTopics []string
+	wg               sync.WaitGroup
+	client           pahomqtt.Client
+	pr               *processorRegistry
+	exceptions       chan Exception
 }
 
 func NewHandler(opts Opts) (*Handler, error) {
 	h := &Handler{
-		processors: make(map[string]*processor),
+		pr:         NewProcessorRegistry(),
 		opts:       opts,
 		exceptions: make(chan Exception, 10),
 	}
@@ -66,12 +94,15 @@ func (h *Handler) mqttClient() error {
 }
 
 func (h *Handler) Close() (err error) {
-	for topic, processor := range h.processors {
+	for _, topic := range h.subscribedTopics {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
 			log.Printf("Mqtt Connector - unsubscribing from topic: %s", topic)
 		}
-		if err = processor.close(); err != nil {
-			log.Printf("Mqtt Connector - closing processor for: %s, error: %v", topic, err)
+		processor := h.pr.GetProcessor(topic)
+		if processor != nil {
+			if err = processor.close(); err != nil {
+				log.Printf("Mqtt Connector - closing processor for: %s, error: %v", topic, err)
+			}
 		}
 	}
 	close(h.exceptions)
@@ -111,7 +142,7 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 		exceptionsChan: h.exceptions,
 		topic:          topic,
 	}
-	h.processors[topic] = p
+	h.pr.SetProcessor(topic, p)
 	p.asyncProcess()
 	log.Printf("Mqtt Connector - Processing Topic: %s", topic)
 	return nil
@@ -119,12 +150,12 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 
 func (h *Handler) messageHandler(client pahomqtt.Client, msg pahomqtt.Message) {
 	topic := msg.Topic()
-	if p, ok := h.processors[topic]; ok {
+	if p := h.pr.GetProcessor(topic); p != nil {
 		p.sendPayload(msg.Payload())
 	} else {
-		for wildcard := range h.processors {
+		for _, wildcard := range h.subscribedTopics {
 			if h.match(wildcard, topic) {
-				if p, ok := h.processors[wildcard]; ok {
+				if p := h.pr.GetProcessor(topic); p != nil {
 					p.sendPayload(msg.Payload())
 				}
 			}
@@ -134,7 +165,11 @@ func (h *Handler) messageHandler(client pahomqtt.Client, msg pahomqtt.Message) {
 
 func (h *Handler) connectHandler(client pahomqtt.Client) {
 	var err error
-	for topic, p := range h.processors {
+	for _, topic := range h.subscribedTopics {
+		p := h.pr.GetProcessor(topic)
+		if p == nil {
+			continue
+		}
 		err = h.AsyncProcess(p.ctx, topic, p.numWorkers, p.processFunc)
 		if err != nil {
 			log.Printf("Mqtt Connector - while re subscribing to %s, error: %v", topic, err)
@@ -189,10 +224,10 @@ func (h *Handler) match(wildcard, topic string) bool {
 }
 
 type processor struct {
+	topic          string
 	ctx            context.Context
 	wg             sync.WaitGroup
 	once           sync.Once
-	topic          string
 	cancel         context.CancelFunc
 	numWorkers     int
 	processFunc    ProcessFunc
