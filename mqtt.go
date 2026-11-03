@@ -94,6 +94,8 @@ func (h *Handler) mqttClient() error {
 }
 
 func (h *Handler) Close() (err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for _, topic := range h.subscribedTopics {
 		if token := h.client.Unsubscribe(topic); !token.WaitTimeout(100 * time.Millisecond) {
 			log.Printf("Mqtt Connector - unsubscribing from topic: %s", topic)
@@ -145,8 +147,8 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	h.pr.SetProcessor(topic, p)
 	p.asyncProcess()
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.subscribedTopics = append(h.subscribedTopics, topic)
-	h.mu.Unlock()
 	log.Printf("Mqtt Connector - Processing Topic: %s", topic)
 	return nil
 }
@@ -156,6 +158,8 @@ func (h *Handler) messageHandler(client pahomqtt.Client, msg pahomqtt.Message) {
 	if p := h.pr.GetProcessor(topic); p != nil {
 		p.sendPayload(msg.Payload())
 	} else {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		for _, wildcard := range h.subscribedTopics {
 			if h.match(wildcard, topic) {
 				if p := h.pr.GetProcessor(topic); p != nil {
@@ -168,6 +172,8 @@ func (h *Handler) messageHandler(client pahomqtt.Client, msg pahomqtt.Message) {
 
 func (h *Handler) connectHandler(client pahomqtt.Client) {
 	var err error
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for _, topic := range h.subscribedTopics {
 		p := h.pr.GetProcessor(topic)
 		if p == nil {
