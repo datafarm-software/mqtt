@@ -144,6 +144,7 @@ func (h *Handler) AsyncProcess(ctx context.Context, topic string, numWorkers int
 	}
 	h.pr.SetProcessor(topic, p)
 	p.asyncProcess()
+	h.subscribedTopics = append(h.subscribedTopics, topic)
 	log.Printf("Mqtt Connector - Processing Topic: %s", topic)
 	return nil
 }
